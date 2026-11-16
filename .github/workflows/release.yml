@@ -77,10 +77,12 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             deb: true
-          - target: aarch64-apple-darwin
-            os: macos-latest
+          # macOS builds run on Intel; the Apple silicon binary is cross-compiled there
+          # (Xcode's toolchain targets both, so nothing extra is installed).
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-15-intel
+          - target: aarch64-apple-darwin
+            os: macos-15-intel
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       TARGET: ${{ matrix.target }}
@@ -155,7 +157,7 @@ jobs:
   universal-macos:
     name: universal macOS binary
     needs: [prepare, build]
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     permissions:
       contents: read
       id-token: write
