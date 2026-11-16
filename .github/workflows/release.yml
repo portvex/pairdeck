@@ -73,10 +73,12 @@ jobs:
           # needs to be installed on the target system.
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            deb: true
+            linux: x86_64
+            arch: amd64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
-            deb: true
+            linux: aarch64
+            arch: arm64
           # macOS builds run on Intel; the Apple silicon binary is cross-compiled there
           # (Xcode's toolchain targets both, so nothing extra is installed).
           - target: x86_64-apple-darwin
@@ -126,32 +128,54 @@ jobs:
           fi
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -rf "dist/$name"
-          # The universal macOS job needs the bare binary too.
-          cp "target/$TARGET/static/pdeck" "dist/pdeck-$TARGET"
-      - name: Debian package
-        if: matrix.deb
+          if [ -n "${{ matrix.linux }}" ]; then
+            # The static executable on its own: download, chmod +x, run.
+            cp "target/$TARGET/static/pdeck" "dist/pdeck-$VERSION-${{ matrix.linux }}-linux"
+          else
+            # Input for the universal macOS job, not a release asset.
+            cp "target/$TARGET/static/pdeck" "dist/bare-$TARGET"
+          fi
+      - uses: ./.github/actions/setup-nfpm
+        if: matrix.linux
+      - name: deb, rpm, Arch and Alpine packages
+        if: matrix.linux
+        run: scripts/package.sh "target/$TARGET/static/pdeck" target/assets "${{ matrix.arch }}" dist "$VERSION"
+      # Install every package with its own package manager and run the command, so a
+      # package the distribution would refuse never reaches a release.
+      - name: install the packages (Debian, Fedora, Arch, Alpine)
+        if: matrix.linux
+        env:
+          LINUX: ${{ matrix.linux }}
         run: |
-          cargo install cargo-deb --locked --version 3.8.0
-          cargo deb --no-build --no-strip --target "$TARGET" --profile static --deb-version "$VERSION" -o dist/
-          dpkg-deb --info dist/*.deb
-          dpkg-deb --contents dist/*.deb
-          # Install it for real: the package must be accepted by dpkg and the command run.
-          sudo dpkg -i dist/*.deb
+          cat > "$RUNNER_TEMP/check.sh" <<'EOF'
+          set -e
           pdeck --version | grep -q "$VERSION"
-          man -w pdeck
-          sudo dpkg -r pairdeck
+          echo "ok: $(pdeck --version)"
+          EOF
+          run() { docker run --rm -e VERSION -v "$PWD/dist:/dist:ro" -v "$RUNNER_TEMP:/t:ro" "$@"; }
+          # (Container images drop man pages, so the man page is checked here only.)
+          sudo dpkg -i dist/*.deb && sh "$RUNNER_TEMP/check.sh" && man -w pdeck && sudo dpkg -r pairdeck
+          run fedora:latest sh -c 'rpm -i /dist/*.rpm && sh /t/check.sh'
+          run alpine:latest sh -c 'apk add --no-cache --allow-untrusted /dist/*.apk && sh /t/check.sh'
+          # Arch publishes x86_64 images only.
+          if [ "$LINUX" = x86_64 ]; then
+            run archlinux:latest sh -c 'pacman -U --noconfirm /dist/*.pkg.tar.zst && sh /t/check.sh'
+          fi
+          # The standalone executable runs on a bare system without any libc.
+          run busybox:latest "/dist/pdeck-$VERSION-$LINUX-linux" --version
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
             dist/*.tar.gz
             dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/*.apk
+            dist/pdeck-*
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.deb
-            dist/pdeck-*
+          path: dist/*
           if-no-files-found: error
 
   universal-macos:
@@ -176,7 +200,7 @@ jobs:
           name="pairdeck-$VERSION-universal-apple-darwin"
           mkdir -p "dist/$name/completions"
           bin="dist/$name/pdeck"
-          lipo -create -output "$bin" in/pdeck-aarch64-apple-darwin in/pdeck-x86_64-apple-darwin
+          lipo -create -output "$bin" in/bare-aarch64-apple-darwin in/bare-x86_64-apple-darwin
           chmod 755 "$bin"
           lipo -info "$bin"
           scripts/check-static.sh "$bin"
@@ -213,8 +237,8 @@ jobs:
           path: dist
       - name: checksums and Homebrew formula
         run: |
-          rm -f dist/pdeck-*
-          (cd dist && sha256sum -- *.tar.gz *.deb > sha256sums.txt && cat sha256sums.txt)
+          rm -f dist/bare-*
+          (cd dist && sha256sum -- * > sha256sums.txt && cat sha256sums.txt)
           scripts/homebrew-formula.sh "$VERSION" dist/sha256sums.txt > dist/pairdeck.rb
       - name: publish
         shell: bash

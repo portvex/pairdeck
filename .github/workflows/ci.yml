@@ -76,6 +76,41 @@ jobs:
       # Reads .cargo/audit.toml for the reviewed exceptions.
       - run: cargo audit
 
+  # The Nix flake (Linux only) builds from source with the pinned Cargo.lock and
+  # nixpkgs from flake.lock.
+  nix:
+    name: nix flake (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: flake.lock is committed and current
+        id: lock
+        run: |
+          nix flake lock
+          if ! git ls-files --error-unmatch flake.lock >/dev/null 2>&1 || ! git diff --quiet -- flake.lock; then
+            echo "::error::flake.lock is missing or out of date: commit the flake-lock artifact of this run"
+            echo "stale=1" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.lock.outputs.stale == '1' && matrix.os == 'ubuntu-latest'
+        with:
+          name: flake-lock
+          path: flake.lock
+      - name: build and run
+        run: |
+          nix flake check -L
+          nix run . -- --version
+          ls result 2>/dev/null || nix build -L
+          test -f result/share/man/man1/pdeck.1.gz
+          test -f result/share/zsh/site-functions/_pdeck
+      - if: steps.lock.outputs.stale == '1'
+        run: exit 1
+
   # Pull requests replay the saved crash inputs; the nightly run also fuzzes
   # every target for a minute.
   fuzz:

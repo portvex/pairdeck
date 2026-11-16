@@ -1,0 +1,82 @@
+# Native Linux packages (.deb, .rpm, Arch .pkg.tar.zst, Alpine .apk) of the static
+# musl binary, built with nfpm (https://nfpm.goreleaser.com) by scripts/package.sh.
+# The binary has no runtime dependencies, so the packages declare none. deb and rpm
+# use xz, which old dpkg (Debian 9+, Ubuntu 18.04+) and rpm (RHEL 7+) read.
+#
+# scripts/package.sh stages the binary, man page and completions in target/package
+# (nfpm does not expand variables in file paths) and sets VERSION and ARCH (amd64 or
+# arm64; nfpm maps it to each format's name).
+name: pairdeck
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+version_schema: semver
+release: 1
+section: utils
+priority: optional
+maintainer: portvex <347037878+portvex@users.noreply.github.com>
+description: |
+  Twin-panel terminal file manager inspired by Midnight Commander.
+  The command is pdeck: F-key workflow, image and code previews, archives,
+  SFTP, S3 and WebDAV, git status, a fuzzy finder and themes.
+vendor: portvex
+homepage: https://github.com/portvex/pairdeck
+license: MIT
+
+contents:
+  - src: target/package/pdeck
+    dst: /usr/bin/pdeck
+    file_info:
+      mode: 0755
+  - src: target/package/pdeck.1.gz
+    dst: /usr/share/man/man1/pdeck.1.gz
+    file_info:
+      mode: 0644
+  - src: target/package/completions/pdeck.bash
+    dst: /usr/share/bash-completion/completions/pdeck
+    file_info:
+      mode: 0644
+  - src: target/package/completions/_pdeck
+    dst: /usr/share/zsh/site-functions/_pdeck
+    file_info:
+      mode: 0644
+  - src: target/package/completions/pdeck.fish
+    dst: /usr/share/fish/vendor_completions.d/pdeck.fish
+    file_info:
+      mode: 0644
+  - src: README.md
+    dst: /usr/share/doc/pairdeck/README.md
+    file_info:
+      mode: 0644
+  # Debian keeps the license as /usr/share/doc/<package>/copyright; the others use
+  # /usr/share/licenses/<package>/.
+  - src: LICENSE
+    dst: /usr/share/doc/pairdeck/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/licenses/pairdeck/LICENSE
+    packager: rpm
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/licenses/pairdeck/LICENSE
+    packager: archlinux
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/licenses/pairdeck/LICENSE
+    packager: apk
+    file_info:
+      mode: 0644
+
+rpm:
+  group: Applications/File
+  compression: xz
+
+deb:
+  compression: xz
+
+archlinux:
+  packager: portvex <347037878+portvex@users.noreply.github.com>
