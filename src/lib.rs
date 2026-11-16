@@ -1,0 +1,46 @@
+//! pairdeck library: everything except terminal setup, so it can be tested and fuzzed.
+
+pub mod app;
+pub mod assoc;
+pub mod attrs;
+pub mod bulkrename;
+pub mod cli;
+pub mod commands;
+pub mod compare;
+pub mod config;
+pub mod dialog;
+pub mod diskusage;
+pub mod dupes;
+pub mod editor;
+pub mod find;
+pub mod frecency;
+pub mod fuzzy;
+pub mod git;
+pub mod help;
+pub mod highlight;
+pub mod icons;
+pub mod keymap;
+pub mod kitty_cells;
+pub mod lineedit;
+pub mod ops;
+pub mod options;
+pub mod panel;
+pub mod preview;
+pub mod preview_ext;
+pub mod screen;
+pub mod svg;
+pub mod sync;
+pub mod tabs;
+pub mod theme;
+pub mod tree;
+pub mod ui;
+pub mod undo;
+pub mod usermenu;
+pub mod util;
+pub mod vfs;
+pub mod viewer;
+// Quality work: key binding editor and live config reload.
+pub mod imageops;
+pub mod keyedit;
+pub mod reload;
+pub mod term;

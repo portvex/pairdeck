@@ -1,0 +1,10 @@
+# cargo-audit configuration. Every ignore needs a reason and should be reviewed periodically.
+[advisories]
+ignore = [
+    # bincode 1.x unmaintained: used only by syntect to decode its own bundled
+    # syntax/theme dumps compiled into the binary (trusted data, no user input).
+    "RUSTSEC-2025-0141",
+    # paste unmaintained: proc-macro of rav1e (AVIF encoder). It is listed in Cargo.lock
+    # but not compiled: we build `image` without the avif feature.
+    "RUSTSEC-2024-0436",
+]

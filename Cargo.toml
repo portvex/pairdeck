@@ -1,0 +1,88 @@
+[package]
+name = "pairdeck"
+version = "0.1.0"
+edition = "2024"
+description = "A modern twin-panel terminal file manager in the spirit of Midnight Commander"
+license = "MIT"
+
+[lib]
+name = "pairdeck"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pdeck"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+resvg = "~0.49"
+# Preview extras: tables, JSON tree, photo metadata, font sheets, executables.
+csv = "1.4"
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
+kamadak-exif = "=0.6.1"
+# Same version resvg already uses (font metadata for the font preview).
+skrifa = "0.44"
+goblin = "0.10.5"
+ignore = "0.4.34"
+nucleo-matcher = "0.3.1"
+blake3 = "1.8"
+portable-pty = "0.9"
+vt100 = "0.18"
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff", "ico", "tga", "qoi", "pnm", "hdr", "exr", "dds", "rayon"] }
+syntect = { version = "5.3", default-features = false, features = ["parsing", "dump-load", "regex-fancy"] }
+zip = "9"
+tar = "0.4"
+flate2 = "1"
+bzip2 = "0.6"
+xz2 = "0.1"
+# Pinned: 0.14.4 is only a day old (zip accepts ^0.14.2).
+zstd = "=0.14.3"
+# S3 (SigV4 request signing, no async runtime) and a blocking HTTP client for S3/WebDAV.
+rusty-s3 = "0.11"
+ureq = "=3.5.0"
+quick-xml = "0.41"
+url = "2"
+sevenz-rust2 = "0.25"
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+toml = "1"
+# Format-preserving edits of config.toml (key binding editor).
+toml_edit = "=0.25.17"
+serde = { version = "1", features = ["derive"] }
+dirs = "7"
+chrono = "0.4"
+uzers = "0.12"
+nix = { version = "0.31", features = ["fs", "user", "hostname"] }
+regex = "1"
+globset = "0.4"
+walkdir = "2"
+notify = "8"
+trash = "5"
+crossbeam-channel = "0.5"
+unicode-width = "0.2"
+unicode-segmentation = "1"
+anyhow = "1"
+which = "8"
+similar = "3"
+open = "5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
+
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+print_stderr = "allow"
+
+[dev-dependencies]
+# Installs the hooks in .cargo-husky/hooks into .git/hooks on the first `cargo test`.
+cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }

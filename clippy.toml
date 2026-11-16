@@ -1,0 +1,3 @@
+# Allow larger functions/arguments: UI render code and file operations are naturally wide.
+too-many-arguments-threshold = 9
+type-complexity-threshold = 400

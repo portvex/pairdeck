@@ -1,0 +1,127 @@
+[package]
+name = "pairdeck-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pairdeck = { path = ".." }
+crossterm = "0.29"
+toml = "1"
+image = { version = "0.25", default-features = false }
+
+# Keep the fuzz crate out of the main package's workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keymap"
+path = "fuzz_targets/keymap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_utils"
+path = "fuzz_targets/text_utils.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "user_menu"
+path = "fuzz_targets/user_menu.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sftp_target"
+path = "fuzz_targets/sftp_target.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "line_edit"
+path = "fuzz_targets/line_edit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "svg"
+path = "fuzz_targets/svg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webdav_xml"
+path = "fuzz_targets/webdav_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "s3_xml"
+path = "fuzz_targets/s3_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "table"
+path = "fuzz_targets/table.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_tree"
+path = "fuzz_targets/json_tree.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media_meta"
+path = "fuzz_targets/media_meta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "docs"
+path = "fuzz_targets/docs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "iso"
+path = "fuzz_targets/iso.rs"
+test = false
+doc = false
+bench = false
