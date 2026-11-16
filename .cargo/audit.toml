@@ -7,4 +7,11 @@ ignore = [
     # paste unmaintained: proc-macro of rav1e (AVIF encoder). It is listed in Cargo.lock
     # but not compiled: we build `image` without the avif feature.
     "RUSTSEC-2024-0436",
+    # rsa Marvin attack (timing side channel in private-key operations), no fixed
+    # release. Pulled in by russh for RSA keys. The only private-key operation is
+    # signing the SFTP login challenge with a local unencrypted id_rsa, once per
+    # connection; host key checks are public-key operations and ssh-agent keys are
+    # signed by the agent. Dropping russh's "rsa" feature removes it, but also
+    # support for RSA host and user keys.
+    "RUSTSEC-2023-0071",
 ]

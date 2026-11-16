@@ -364,7 +364,13 @@ end run"#;
     )
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+)))]
 fn finder_put_back(_orig: &Path) -> anyhow::Result<()> {
     anyhow::bail!("cannot read the trash folder")
 }

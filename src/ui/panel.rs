@@ -421,8 +421,9 @@ fn draw_info(f: &mut Frame, app: &mut App, i: usize, inner: Rect, ctx: &Ctx) {
         && let Ok(st) = nix::sys::statvfs::statvfs(dir)
     {
         let bs = st.fragment_size();
-        let total = st.blocks() as u64 * bs;
-        let free = st.blocks_available() as u64 * bs;
+        // Block counts are u32 on macOS and u64 on Linux: the cast is needed on one of them.
+        #[allow(clippy::unnecessary_cast)]
+        let (total, free) = (st.blocks() as u64 * bs, st.blocks_available() as u64 * bs);
         lines.push(Line::from(vec![
             label("Filesystem"),
             val(format!("{} free of {}", human_size(free), human_size(total))),

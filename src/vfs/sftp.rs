@@ -1,15 +1,28 @@
-//! SFTP VFS over libssh2 (ssh2 crate): agent / key / password auth,
+//! SFTP VFS over russh (pure Rust SSH, no OpenSSL): agent / key / password auth,
 //! ~/.ssh/config aliases and known_hosts verification.
 
 use super::{Entry, EntryKind, Location, Vfs, VfsHandle, normalize};
 use crate::app::App;
 use crate::dialog::Form;
 use anyhow::{Context, Result, anyhow, bail};
-use ssh2::{CheckResult, FileStat, KnownHostFileKind, OpenFlags, OpenType, Session, Sftp};
+use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
+use russh::keys::PublicKeyOrCertificate;
+use russh::keys::agent::client::AgentClient;
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
+use russh::{MethodKind, MethodSet};
+use russh_sftp::client::SftpSession;
+use russh_sftp::client::error::Error as SftpError;
+use russh_sftp::client::fs::{File, Metadata};
+use russh_sftp::protocol::{FileAttributes, OpenFlags};
+use std::future::Future;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use tokio::runtime::Runtime;
+use tokio_util::io::SyncIoBridge;
 
 /// Connection parameters after resolving ~/.ssh/config.
 #[derive(Clone, Debug, Default)]
@@ -191,75 +204,126 @@ mod percent_tests {
 
 // ---------------------------------------------------------------- connection
 
+/// An SFTP session. russh is async: each connection owns a small tokio runtime
+/// that drives the SSH transport, and the blocking `Vfs` calls wait on it. Readers
+/// and writers handed out keep the runtime alive, so they outlive a closed panel.
 pub struct SftpFs {
-    sftp: Sftp,
-    // Keep the session alive as long as the SFTP channel.
-    _sess: Session,
+    sftp: SftpSession,
+    // Keep the SSH connection open as long as the SFTP channel.
+    _ssh: client::Handle<HostCheck>,
     user: String,
     alias: String,
     port: u16,
+    // Declared last: dropped after the session and connection that run on it.
+    rt: Arc<Runtime>,
 }
 
 fn known_hosts_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".ssh/known_hosts"))
 }
 
-fn sha256_fingerprint(sess: &Session) -> String {
-    match sess.host_key_hash(ssh2::HashType::Sha256) {
-        Some(h) => crate::commands::base64(h).trim_end_matches('=').to_string(),
-        None => "?".into(),
-    }
+fn sha256_fingerprint(key: &PublicKey) -> String {
+    let fp = key.fingerprint(HashAlg::Sha256).to_string();
+    fp.trim_start_matches("SHA256:").to_string()
 }
 
-fn verify_host(sess: &Session, t: &Target, accept_new: bool) -> Result<()> {
-    let (key, ktype) = sess.host_key().ok_or_else(|| anyhow!("server sent no host key"))?;
-    let key = key.to_vec();
-    let mut kh = sess.known_hosts()?;
-    let path = known_hosts_path();
-    if let Some(p) = &path
-        && p.exists()
-    {
-        let _ = kh.read_file(p, KnownHostFileKind::OpenSSH);
-    }
-    match kh.check_port(&t.host, t.port, &key) {
-        CheckResult::Match => Ok(()),
-        CheckResult::Mismatch => bail!(
-            "WARNING: the host key for {}:{} does NOT match ~/.ssh/known_hosts.\n\
-             Someone could be intercepting the connection. Refusing to connect.\n\
-             Fingerprint (SHA256): {}",
-            t.host,
-            t.port,
-            sha256_fingerprint(sess)
-        ),
-        CheckResult::NotFound | CheckResult::Failure => {
-            if !accept_new {
-                return Err(
-                    UnknownHost { host: t.host.clone(), port: t.port, fingerprint: sha256_fingerprint(sess) }.into()
-                );
-            }
-            let entry = if t.port == 22 { t.host.clone() } else { format!("[{}]:{}", t.host, t.port) };
-            kh.add(&entry, &key, "added by pairdeck", ktype.into())?;
-            if let Some(p) = path {
-                if let Some(d) = p.parent() {
-                    let _ = std::fs::create_dir_all(d);
+/// What the host key check found, read back after a refused handshake.
+#[derive(Default)]
+enum HostVerdict {
+    #[default]
+    Pending,
+    Unknown(String),
+    Mismatch(String),
+    Error(String),
+}
+
+/// russh client handler: checks the server's host key against ~/.ssh/known_hosts.
+struct HostCheck {
+    host: String,
+    port: u16,
+    accept_new: bool,
+    verdict: Arc<Mutex<HostVerdict>>,
+}
+
+impl HostCheck {
+    fn decide(&self, key: &PublicKey) -> HostVerdict {
+        let Some(path) = known_hosts_path() else {
+            return HostVerdict::Error("no home directory for ~/.ssh/known_hosts".into());
+        };
+        let fp = sha256_fingerprint(key);
+        let known = if path.exists() {
+            russh::keys::check_known_hosts_path(&self.host, self.port, key, &path)
+        } else {
+            Ok(false)
+        };
+        match known {
+            Ok(true) => HostVerdict::Pending,
+            Err(russh::keys::Error::KeyChanged { .. }) => HostVerdict::Mismatch(fp),
+            Ok(false) | Err(_) if !self.accept_new => HostVerdict::Unknown(fp),
+            Ok(false) | Err(_) => {
+                match russh::keys::known_hosts::learn_known_hosts_path(&self.host, self.port, key, &path) {
+                    Ok(()) => HostVerdict::Pending,
+                    Err(e) => HostVerdict::Error(format!("cannot update ~/.ssh/known_hosts: {e}")),
                 }
-                kh.write_file(&p, KnownHostFileKind::OpenSSH).context("cannot update ~/.ssh/known_hosts")?;
             }
-            Ok(())
         }
     }
 }
 
-fn authenticate(sess: &Session, t: &Target, password: Option<&str>) -> Result<()> {
-    let user = t.user.as_str();
-    let methods = sess.auth_methods(user).unwrap_or("publickey,password").to_string();
-    if sess.authenticated() {
-        return Ok(());
+impl client::Handler for HostCheck {
+    type Error = russh::Error;
+
+    async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+        let verdict = match key {
+            PublicKeyOrCertificate::PublicKey { key, .. } => self.decide(key),
+            PublicKeyOrCertificate::Certificate(_) => {
+                HostVerdict::Error("the server presented a host certificate; only plain host keys are supported".into())
+            }
+        };
+        let ok = matches!(verdict, HostVerdict::Pending);
+        *self.verdict.lock().unwrap_or_else(|e| e.into_inner()) = verdict;
+        Ok(ok)
     }
-    if methods.contains("publickey") {
-        let _ = sess.userauth_agent(user);
-        if sess.authenticated() {
-            return Ok(());
+}
+
+fn host_error(t: &Target, verdict: HostVerdict, e: russh::Error) -> anyhow::Error {
+    match verdict {
+        HostVerdict::Unknown(fingerprint) => UnknownHost { host: t.host.clone(), port: t.port, fingerprint }.into(),
+        HostVerdict::Mismatch(fp) => anyhow!(
+            "WARNING: the host key for {}:{} does NOT match ~/.ssh/known_hosts.\n\
+             Someone could be intercepting the connection. Refusing to connect.\n\
+             Fingerprint (SHA256): {fp}",
+            t.host,
+            t.port
+        ),
+        HostVerdict::Error(msg) => anyhow!(msg),
+        HostVerdict::Pending => anyhow!(e).context("SSH handshake failed"),
+    }
+}
+
+fn has(methods: &MethodSet, m: MethodKind) -> bool {
+    methods.contains(&m)
+}
+
+async fn authenticate(ssh: &mut client::Handle<HostCheck>, t: &Target, password: Option<&str>) -> Result<()> {
+    let user = t.user.as_str();
+    // "none" either logs in (rare) or tells us which methods the server accepts.
+    let methods = match ssh.authenticate_none(user).await? {
+        AuthResult::Success => return Ok(()),
+        AuthResult::Failure { remaining_methods, .. } => remaining_methods,
+    };
+    if has(&methods, MethodKind::PublicKey) {
+        let rsa_hash = ssh.best_supported_rsa_hash().await.ok().flatten().flatten();
+        if let Ok(mut agent) = AgentClient::connect_env().await
+            && let Ok(ids) = agent.request_identities().await
+        {
+            for id in ids {
+                let key = id.public_key().into_owned();
+                if let Ok(AuthResult::Success) = ssh.authenticate_publickey_with(user, key, rsa_hash, &mut agent).await
+                {
+                    return Ok(());
+                }
+            }
         }
         let home = crate::util::home();
         let mut keys = t.identity.clone();
@@ -267,28 +331,32 @@ fn authenticate(sess: &Session, t: &Target, password: Option<&str>) -> Result<()
             keys.push(home.join(".ssh").join(k));
         }
         for k in keys {
-            if k.exists() {
-                let pubk = PathBuf::from(format!("{}.pub", k.display()));
-                let pubk = pubk.exists().then_some(pubk);
-                if sess.userauth_pubkey_file(user, pubk.as_deref(), &k, None).is_ok() && sess.authenticated() {
-                    return Ok(());
-                }
+            // Keys with a passphrase are skipped: use ssh-agent for those.
+            let Ok(key) = russh::keys::load_secret_key(&k, None) else { continue };
+            let key = PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash);
+            if let Ok(AuthResult::Success) = ssh.authenticate_publickey(user, key).await {
+                return Ok(());
             }
         }
     }
     if let Some(pw) = password.filter(|p| !p.is_empty()) {
-        if methods.contains("password") && sess.userauth_password(user, pw).is_ok() && sess.authenticated() {
+        if has(&methods, MethodKind::Password)
+            && let Ok(AuthResult::Success) = ssh.authenticate_password(user, pw).await
+        {
             return Ok(());
         }
-        if methods.contains("keyboard-interactive") {
-            struct Pw<'a>(&'a str);
-            impl ssh2::KeyboardInteractivePrompt for Pw<'_> {
-                fn prompt<'b>(&mut self, _u: &str, _i: &str, prompts: &[ssh2::Prompt<'b>]) -> Vec<String> {
-                    prompts.iter().map(|_| self.0.to_string()).collect()
+        if has(&methods, MethodKind::KeyboardInteractive) {
+            let mut reply = ssh.authenticate_keyboard_interactive_start(user, None).await;
+            // Answer every prompt with the password; servers may send empty rounds too.
+            for _ in 0..5 {
+                match reply {
+                    Ok(KeyboardInteractiveAuthResponse::Success) => return Ok(()),
+                    Ok(KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. }) => {
+                        let answers = prompts.iter().map(|_| pw.to_string()).collect();
+                        reply = ssh.authenticate_keyboard_interactive_respond(answers).await;
+                    }
+                    _ => break,
                 }
-            }
-            if sess.userauth_keyboard_interactive(user, &mut Pw(pw)).is_ok() && sess.authenticated() {
-                return Ok(());
             }
         }
         bail!("Authentication failed for {}@{} (wrong password?)", t.user, t.host);
@@ -298,39 +366,61 @@ fn authenticate(sess: &Session, t: &Target, password: Option<&str>) -> Result<()
 
 /// Connect, verify, authenticate and open the SFTP channel.
 pub fn connect(t: &Target, password: Option<&str>, accept_new: bool) -> Result<(SftpFs, PathBuf)> {
-    let addr = (t.host.as_str(), t.port)
-        .to_socket_addrs()
-        .with_context(|| format!("cannot resolve {}", t.host))?
-        .next()
-        .ok_or_else(|| anyhow!("cannot resolve {}", t.host))?;
-    let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-        .with_context(|| format!("cannot connect to {}:{}", t.host, t.port))?;
-    let _ = tcp.set_nodelay(true);
-    let mut sess = Session::new()?;
-    sess.set_tcp_stream(tcp);
-    sess.set_timeout(30_000);
-    sess.handshake().context("SSH handshake failed")?;
-    verify_host(&sess, t, accept_new)?;
-    authenticate(&sess, t, password)?;
-    sess.set_keepalive(true, 30);
-    let sftp = sess.sftp().context("cannot start the SFTP subsystem")?;
-    let start = if t.path.is_empty() || t.path == "/~" || t.path == "/~/" {
-        sftp.realpath(Path::new(".")).unwrap_or_else(|_| PathBuf::from("/"))
-    } else if let Some(rest) = t.path.strip_prefix("/~/") {
-        sftp.realpath(Path::new(".")).unwrap_or_else(|_| PathBuf::from("/")).join(rest)
-    } else {
-        PathBuf::from(&t.path)
-    };
-    let fs = SftpFs { sftp, _sess: sess, user: t.user.clone(), alias: t.alias.clone(), port: t.port };
+    let rt = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("pairdeck-ssh")
+            .enable_all()
+            .build()
+            .context("cannot start the SSH runtime")?,
+    );
+    let verdict = Arc::new(Mutex::new(HostVerdict::Pending));
+    let handler = HostCheck { host: t.host.clone(), port: t.port, accept_new, verdict: verdict.clone() };
+    let config = Arc::new(client::Config {
+        keepalive_interval: Some(Duration::from_secs(30)),
+        nodelay: true,
+        ..Default::default()
+    });
+    let (ssh, sftp, start) = rt.block_on(async {
+        let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect((t.host.as_str(), t.port)))
+            .await
+            .map_err(|_| anyhow!("connection timed out"))
+            .and_then(|r| r.map_err(anyhow::Error::from))
+            .with_context(|| format!("cannot connect to {}:{}", t.host, t.port))?;
+        let handshake = tokio::time::timeout(Duration::from_secs(30), client::connect_stream(config, tcp, handler));
+        let mut ssh = match handshake.await {
+            Err(_) => bail!("SSH handshake with {}:{} timed out", t.host, t.port),
+            Ok(Ok(ssh)) => ssh,
+            Ok(Err(e)) => {
+                let v = std::mem::take(&mut *verdict.lock().unwrap_or_else(|e| e.into_inner()));
+                return Err(host_error(t, v, e));
+            }
+        };
+        authenticate(&mut ssh, t, password).await?;
+        let channel = ssh.channel_open_session().await.context("cannot open an SSH channel")?;
+        channel.request_subsystem(true, "sftp").await.context("cannot start the SFTP subsystem")?;
+        let sftp = SftpSession::new(channel.into_stream()).await.context("cannot start the SFTP subsystem")?;
+        sftp.set_timeout(30);
+        let home = || async { sftp.canonicalize(".").await.unwrap_or_else(|_| "/".into()) };
+        let start = if t.path.is_empty() || t.path == "/~" || t.path == "/~/" {
+            PathBuf::from(home().await)
+        } else if let Some(rest) = t.path.strip_prefix("/~/") {
+            PathBuf::from(home().await).join(rest)
+        } else {
+            PathBuf::from(&t.path)
+        };
+        Ok((ssh, sftp, start))
+    })?;
+    let fs = SftpFs { sftp, _ssh: ssh, user: t.user.clone(), alias: t.alias.clone(), port: t.port, rt };
     Ok((fs, normalize(&start)))
 }
 
-fn to_time(t: Option<u64>) -> Option<SystemTime> {
-    t.map(|s| UNIX_EPOCH + Duration::from_secs(s))
+fn to_time(t: Option<u32>) -> Option<SystemTime> {
+    t.map(|s| UNIX_EPOCH + Duration::from_secs(u64::from(s)))
 }
 
-fn entry_from(name: String, st: &FileStat) -> Entry {
-    let mode = st.perm.unwrap_or(0);
+fn entry_from(name: String, st: &Metadata) -> Entry {
+    let mode = st.permissions.unwrap_or(0);
     let kind = match mode & 0o170000 {
         0o040000 => EntryKind::Dir,
         0o120000 => EntryKind::Symlink { target: String::new(), to_dir: false, broken: false },
@@ -347,25 +437,74 @@ fn entry_from(name: String, st: &FileStat) -> Entry {
     e
 }
 
+fn sp(p: &Path) -> String {
+    p.to_string_lossy().into_owned()
+}
+
+fn err(op: &str, p: &Path, e: SftpError) -> anyhow::Error {
+    anyhow!("{op} {}: {e}", p.display())
+}
+
+/// Blocking reader over an SFTP file.
+struct SftpReader {
+    inner: SyncIoBridge<File>,
+    _rt: Arc<Runtime>,
+}
+
+impl Read for SftpReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+/// Blocking writer over an SFTP file. Writes are pipelined; `flush` waits for the
+/// server to confirm them and dropping closes the remote handle.
+struct SftpWriter {
+    inner: Option<SyncIoBridge<File>>,
+    rt: Arc<Runtime>,
+}
+
+impl Write for SftpWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.as_mut().map_or(Ok(0), |w| w.write(buf))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.as_mut().map_or(Ok(()), |w| w.flush())
+    }
+}
+
+impl Drop for SftpWriter {
+    fn drop(&mut self) {
+        if let Some(w) = self.inner.take() {
+            let mut f = w.into_inner();
+            let _ = self.rt.block_on(f.shutdown());
+        }
+    }
+}
+
 impl SftpFs {
+    fn run<T>(&self, f: impl Future<Output = T>) -> T {
+        self.rt.block_on(f)
+    }
+
     fn finish_link(&self, path: &Path, e: &mut Entry) {
         if !e.is_symlink() {
             return;
         }
-        let target = self.sftp.readlink(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        match self.sftp.stat(path) {
+        let target = self.run(self.sftp.read_link(sp(path))).unwrap_or_default();
+        match self.run(self.sftp.metadata(sp(path))) {
             Ok(st) => {
-                let to_dir = st.perm.unwrap_or(0) & 0o170000 == 0o040000;
+                let to_dir = st.permissions.unwrap_or(0) & 0o170000 == 0o040000;
                 e.size = st.size.unwrap_or(e.size);
                 e.kind = EntryKind::Symlink { target, to_dir, broken: false };
             }
             Err(_) => e.kind = EntryKind::Symlink { target, to_dir: false, broken: true },
         }
     }
-}
 
-fn err(op: &str, p: &Path, e: ssh2::Error) -> anyhow::Error {
-    anyhow!("{op} {}: {}", p.display(), e.message())
+    fn lstat_mode(&self, p: &Path) -> Option<u32> {
+        self.run(self.sftp.symlink_metadata(sp(p))).ok().map(|m| m.permissions.unwrap_or(0))
+    }
 }
 
 impl Vfs for SftpFs {
@@ -383,22 +522,22 @@ impl Vfs for SftpFs {
     }
 
     fn list(&mut self, dir: &Path) -> Result<Vec<Entry>> {
-        let items = self.sftp.readdir(dir).map_err(|e| err("cannot read", dir, e))?;
-        let mut out = Vec::with_capacity(items.len());
-        for (p, st) in items {
-            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let items = self.run(self.sftp.read_dir(sp(dir))).map_err(|e| err("cannot read", dir, e))?;
+        let mut out = Vec::new();
+        for item in items {
+            let name = item.file_name();
             if name == "." || name == ".." || name.is_empty() {
                 continue;
             }
-            let mut e = entry_from(name, &st);
-            self.finish_link(&p, &mut e);
+            let mut e = entry_from(name, &item.metadata());
+            self.finish_link(&dir.join(&e.name), &mut e);
             out.push(e);
         }
         Ok(out)
     }
 
     fn stat(&mut self, path: &Path) -> Result<Entry> {
-        let st = self.sftp.lstat(path).map_err(|e| err("stat", path, e))?;
+        let st = self.run(self.sftp.symlink_metadata(sp(path))).map_err(|e| err("stat", path, e))?;
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
         let mut e = entry_from(name, &st);
         self.finish_link(path, &mut e);
@@ -406,70 +545,73 @@ impl Vfs for SftpFs {
     }
 
     fn open_read(&mut self, path: &Path) -> Result<Box<dyn Read + Send>> {
-        let f = self.sftp.open(path).map_err(|e| err("open", path, e))?;
-        Ok(Box::new(f))
+        let f = self.run(self.sftp.open(sp(path))).map_err(|e| err("open", path, e))?;
+        let inner = SyncIoBridge::new_with_handle(f, self.rt.handle().clone());
+        Ok(Box::new(SftpReader { inner, _rt: self.rt.clone() }))
     }
 
     fn create_write(&mut self, path: &Path, mode: u32) -> Result<Box<dyn Write + Send>> {
-        let mode = if mode == 0 { 0o644 } else { mode & 0o7777 };
+        let mut attrs = FileAttributes::empty();
+        attrs.permissions = Some(if mode == 0 { 0o644 } else { mode & 0o7777 });
+        let flags = OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE;
         let f = self
-            .sftp
-            .open_mode(path, OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE, mode as i32, OpenType::File)
+            .run(self.sftp.open_with_flags_and_attributes(sp(path), flags, attrs))
             .map_err(|e| err("create", path, e))?;
-        Ok(Box::new(f))
+        let inner = SyncIoBridge::new_with_handle(f, self.rt.handle().clone());
+        Ok(Box::new(SftpWriter { inner: Some(inner), rt: self.rt.clone() }))
     }
 
     fn mkdir(&mut self, path: &Path, mode: u32) -> Result<()> {
-        let mode = if mode == 0 { 0o755 } else { mode & 0o7777 };
-        self.sftp.mkdir(path, mode as i32).map_err(|e| err("mkdir", path, e))
+        self.run(self.sftp.create_dir(sp(path))).map_err(|e| err("mkdir", path, e))?;
+        if mode != 0 && mode & 0o7777 != 0o755 {
+            let _ = self.set_mode(path, mode);
+        }
+        Ok(())
     }
 
     fn remove_file(&mut self, path: &Path) -> Result<()> {
-        self.sftp.unlink(path).map_err(|e| err("delete", path, e))
+        self.run(self.sftp.remove_file(sp(path))).map_err(|e| err("delete", path, e))
     }
 
     fn remove_dir(&mut self, path: &Path) -> Result<()> {
-        self.sftp.rmdir(path).map_err(|e| err("rmdir", path, e))
+        self.run(self.sftp.remove_dir(sp(path))).map_err(|e| err("rmdir", path, e))
     }
 
     fn rename(&mut self, from: &Path, to: &Path) -> Result<()> {
-        // Plain rename first (fails on existing targets with many servers), then with overwrite flags.
-        if self.sftp.rename(from, to, Some(ssh2::RenameFlags::NATIVE)).is_ok() {
-            return Ok(());
-        }
-        let first = match self.sftp.rename(
-            from,
-            to,
-            Some(ssh2::RenameFlags::OVERWRITE | ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::NATIVE),
-        ) {
+        let first = match self.run(self.sftp.rename(sp(from), sp(to))) {
             Ok(()) => return Ok(()),
             Err(e) => e,
         };
-        // SFTP v3 servers (OpenSSH) refuse to rename onto an existing file and libssh2
-        // has no posix-rename extension: replace a non-directory target explicitly.
-        match self.sftp.lstat(to) {
-            Ok(st) if st.perm.unwrap_or(0) & 0o170000 != 0o040000 && self.sftp.lstat(from).is_ok() => {
-                self.sftp.unlink(to).map_err(|e| err("rename (replace)", to, e))?;
-                self.sftp.rename(from, to, Some(ssh2::RenameFlags::NATIVE)).map_err(|e| err("rename", from, e))
+        // SFTP v3 servers (OpenSSH) refuse to rename onto an existing file: replace a
+        // non-directory target explicitly.
+        match self.lstat_mode(to) {
+            Some(m) if m & 0o170000 != 0o040000 && self.lstat_mode(from).is_some() => {
+                self.run(self.sftp.remove_file(sp(to))).map_err(|e| err("rename (replace)", to, e))?;
+                self.run(self.sftp.rename(sp(from), sp(to))).map_err(|e| err("rename", from, e))
             }
             _ => Err(err("rename", from, first)),
         }
     }
 
     fn set_mode(&mut self, path: &Path, mode: u32) -> Result<()> {
-        let st = FileStat { size: None, uid: None, gid: None, perm: Some(mode & 0o7777), atime: None, mtime: None };
-        self.sftp.setstat(path, st).map_err(|e| err("chmod", path, e))
+        let mut attrs = FileAttributes::empty();
+        attrs.permissions = Some(mode & 0o7777);
+        self.run(self.sftp.set_metadata(sp(path), attrs)).map_err(|e| err("chmod", path, e))
     }
 
     fn symlink(&mut self, target: &str, link: &Path) -> Result<()> {
-        // libssh2 argument order matches OpenSSH's sftp-server: (points-to, link path).
-        self.sftp.symlink(Path::new(target), link).map_err(|e| err("symlink", link, e))
+        // OpenSSH's sftp-server reads the two SSH_FXP_SYMLINK fields swapped against
+        // the draft: send (points-to, link path), which is what it expects.
+        self.run(self.sftp.symlink(target, sp(link))).map_err(|e| err("symlink", link, e))
     }
 
     fn set_mtime(&mut self, path: &Path, mtime: SystemTime) -> Result<()> {
         let secs = mtime.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let st = FileStat { size: None, uid: None, gid: None, perm: None, atime: Some(secs), mtime: Some(secs) };
-        self.sftp.setstat(path, st).map_err(|e| err("set time", path, e))
+        let secs = u32::try_from(secs).unwrap_or(u32::MAX);
+        let mut attrs = FileAttributes::empty();
+        attrs.atime = Some(secs);
+        attrs.mtime = Some(secs);
+        self.run(self.sftp.set_metadata(sp(path), attrs)).map_err(|e| err("set time", path, e))
     }
 }
 
