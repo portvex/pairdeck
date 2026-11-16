@@ -25,15 +25,28 @@ Binary name: `pdeck`
 
 ## Install
 
-| Where | Command |
-|---|---|
-| Homebrew (macOS, Linux) | `brew install portvex/tap/pairdeck` |
-| Debian / Ubuntu | download `pairdeck_<version>_amd64.deb` or `_arm64.deb` from the [latest release](https://github.com/portvex/pairdeck/releases/latest), then `sudo apt install ./pairdeck_*.deb` |
-| Cargo | `cargo install pairdeck` (Rust 1.89+ and a C compiler) |
-| Prebuilt binary | static Linux (x86_64, aarch64) and universal macOS tarballs on the [releases page](https://github.com/portvex/pairdeck/releases) |
+**Linux** (x86_64 and aarch64). Every build is a static executable with no runtime
+dependencies, so it runs on any distribution. Files are on the
+[latest release](https://github.com/portvex/pairdeck/releases/latest):
 
-Every release file has a signed build provenance attestation:
-`gh attestation verify pairdeck-<version>-x86_64-unknown-linux-musl.tar.gz -R portvex/pairdeck`.
+| Distribution | Install |
+|---|---|
+| Any (standalone file) | `curl -Lo pdeck https://github.com/portvex/pairdeck/releases/latest/download/pdeck-<version>-x86_64-linux && chmod +x pdeck` |
+| Debian, Ubuntu | `sudo apt install ./pairdeck_<version>-1_amd64.deb` (or `_arm64.deb`) |
+| Fedora, RHEL, openSUSE | `sudo dnf install ./pairdeck-<version>-1.x86_64.rpm` (or `.aarch64.rpm`) |
+| Arch | `sudo pacman -U pairdeck-<version>-1-x86_64.pkg.tar.zst` (or `-aarch64`) |
+| Alpine | `sudo apk add --allow-untrusted pairdeck_<version>-r1_x86_64.apk` (unsigned) |
+| Nix (flake) | `nix run github:portvex/pairdeck`, or `nix profile install github:portvex/pairdeck` |
+| Homebrew | `brew install portvex/tap/pairdeck` |
+
+**macOS**: `brew install portvex/tap/pairdeck`, or the universal (Apple silicon and
+Intel) tarball from the releases page.
+
+**From source**: `cargo install pairdeck` (Rust 1.89+ and a C compiler).
+
+Every release file has a signed build provenance attestation, and `sha256sums.txt`
+lists their checksums:
+`gh attestation verify pdeck-<version>-x86_64-linux -R portvex/pairdeck`.
 
 ## Build
 
@@ -428,7 +441,7 @@ installed into `.git/hooks` on the first `cargo test`. CI runs the same commands
 | pre-commit hook | `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings` |
 | pre-push hook | `cargo test --locked`, `cargo audit`, `cargo deny check` |
 | CI (`.github/workflows/ci.yml`, Linux + macOS) | all of the above; pull requests replay the fuzz regressions, the nightly run fuzzes every target for 60 s |
-| Release (`.github/workflows/release.yml`) | the full CI, then static musl binaries for x86_64/aarch64 Linux, macOS arm64/x86_64 and a universal binary, `.deb` packages, build attestations, a GitHub release with `sha256sums.txt`, the Homebrew tap and crates.io |
+| Release (`.github/workflows/release.yml`) | the full CI (including the Nix flake), then static Linux binaries (x86_64/aarch64) as standalone files, tarballs and .deb/.rpm/Arch/Alpine packages (each installed in its distribution's container), macOS arm64/x86_64 and universal tarballs, build attestations, a GitHub release with `sha256sums.txt`, the Homebrew tap and crates.io |
 
 ### Releasing
 
@@ -441,6 +454,9 @@ runs the whole CI, builds and test-installs every package, and only then creates
 `v0.2.0` and the GitHub release (pushing that tag yourself works too). A version with a
 suffix such as `0.2.0-rc.1` becomes a pre-release and skips the Homebrew tap.
 
+Linux packages are built from `packaging/nfpm.yaml` by `scripts/package.sh` with
+[nfpm](https://nfpm.goreleaser.com) (pinned by hash in `.github/actions/setup-nfpm`);
+the Nix flake is `flake.nix` (keep `flake.lock` committed; CI fails when it is stale).
 The Homebrew formula is rendered from `packaging/homebrew/pairdeck.rb.in` by
 `scripts/homebrew-formula.sh` and pushed to `portvex/homebrew-tap` with a deploy key
 (secret `HOMEBREW_TAP_DEPLOY_KEY`); crates.io needs the secret `CARGO_REGISTRY_TOKEN`.

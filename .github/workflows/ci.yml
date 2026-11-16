@@ -76,6 +76,80 @@ jobs:
       # Reads .cargo/audit.toml for the reviewed exceptions.
       - run: cargo audit
 
+  # Linux packages: built and installed in Debian, Fedora, Alpine and Arch like a
+  # release does, so packaging problems show up in pull requests.
+  packages:
+    name: packages (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, arch: x86_64, deb: amd64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, arch: aarch64, deb: arm64 }
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target "$TARGET"
+      - run: scripts/check-static.sh "target/$TARGET/release/pdeck"
+      - name: man page, completions and standalone file
+        run: |
+          bin="target/$TARGET/release/pdeck"
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p target/assets/completions dist
+          "$bin" --man > target/assets/pdeck.1
+          "$bin" --completions bash > target/assets/completions/pdeck.bash
+          "$bin" --completions zsh > target/assets/completions/_pdeck
+          "$bin" --completions fish > target/assets/completions/pdeck.fish
+          cp "$bin" "dist/pdeck-$version-${{ matrix.arch }}-linux"
+      - uses: ./.github/actions/setup-nfpm
+      - run: scripts/package.sh "target/$TARGET/release/pdeck" target/assets "${{ matrix.deb }}" dist "$VERSION"
+      - run: scripts/test-packages.sh dist "$VERSION" "${{ matrix.arch }}"
+
+  # The Nix flake (Linux only) builds from source with the pinned Cargo.lock and
+  # nixpkgs from flake.lock.
+  nix:
+    name: nix flake (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: flake.lock is committed and current
+        id: lock
+        run: |
+          nix flake lock
+          if ! git ls-files --error-unmatch flake.lock >/dev/null 2>&1 || ! git diff --quiet -- flake.lock; then
+            echo "::error::flake.lock is missing or out of date: commit the flake-lock artifact of this run"
+            echo "stale=1" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.lock.outputs.stale == '1' && matrix.os == 'ubuntu-latest'
+        with:
+          name: flake-lock
+          path: flake.lock
+      - name: build and run
+        run: |
+          nix flake check -L
+          nix run . -- --version
+          ls result 2>/dev/null || nix build -L
+          test -f result/share/man/man1/pdeck.1.gz
+          test -f result/share/zsh/site-functions/_pdeck
+      - if: steps.lock.outputs.stale == '1'
+        run: exit 1
+
   # Pull requests replay the saved crash inputs; the nightly run also fuzzes
   # every target for a minute.
   fuzz:

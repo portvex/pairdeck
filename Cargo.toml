@@ -14,28 +14,6 @@ categories = ["command-line-utilities", "filesystem"]
 # fuzzing, CI or packaging files).
 include = ["/src/**", "/tests/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
 
-# `cargo deb --no-build --target <musl target> --profile static` after the release
-# workflow has generated the man page and completions into target/assets.
-[package.metadata.deb]
-name = "pairdeck"
-maintainer = "portvex <347037878+portvex@users.noreply.github.com>"
-section = "utils"
-priority = "optional"
-# Static musl executable: no shared library dependencies.
-depends = ""
-extended-description = """\
-pairdeck (command: pdeck) is a twin-panel terminal file manager inspired by Midnight \
-Commander: F-key workflow, image and code previews, archives, SFTP, S3 and WebDAV, \
-git status, a fuzzy finder and themes."""
-assets = [
-    ["target/release/pdeck", "usr/bin/", "755"],
-    ["target/assets/pdeck.1", "usr/share/man/man1/", "644"],
-    ["target/assets/completions/pdeck.bash", "usr/share/bash-completion/completions/pdeck", "644"],
-    ["target/assets/completions/_pdeck", "usr/share/zsh/vendor-completions/", "644"],
-    ["target/assets/completions/pdeck.fish", "usr/share/fish/vendor_completions.d/", "644"],
-    ["README.md", "usr/share/doc/pairdeck/", "644"],
-]
-
 [lib]
 name = "pairdeck"
 path = "src/lib.rs"
