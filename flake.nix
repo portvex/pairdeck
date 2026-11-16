@@ -27,7 +27,12 @@
             "--bin"
             "pdeck"
           ];
-          nativeBuildInputs = [ pkgs.installShellFiles ];
+          nativeBuildInputs = [
+            pkgs.installShellFiles
+            pkgs.pkg-config
+          ];
+          # nixpkgs builds zstd-sys against the system zstd (found with pkg-config).
+          buildInputs = [ pkgs.zstd ];
           # The test suite starts sshd and other servers; CI runs it instead.
           doCheck = false;
           postInstall = ''
