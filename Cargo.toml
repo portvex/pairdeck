@@ -7,7 +7,6 @@ rust-version = "1.89"
 description = "A modern twin-panel terminal file manager in the spirit of Midnight Commander"
 license = "MIT"
 repository = "https://github.com/portvex/pairdeck"
-homepage = "https://github.com/portvex/pairdeck"
 readme = "README.md"
 keywords = ["file-manager", "tui", "terminal", "midnight-commander", "sftp"]
 categories = ["command-line-utilities", "filesystem"]
