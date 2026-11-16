@@ -76,6 +76,45 @@ jobs:
       # Reads .cargo/audit.toml for the reviewed exceptions.
       - run: cargo audit
 
+  # Linux packages: built and installed in Debian, Fedora, Alpine and Arch like a
+  # release does, so packaging problems show up in pull requests.
+  packages:
+    name: packages (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, arch: x86_64, deb: amd64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, arch: aarch64, deb: arm64 }
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target "$TARGET"
+      - run: scripts/check-static.sh "target/$TARGET/release/pdeck"
+      - name: man page, completions and standalone file
+        run: |
+          bin="target/$TARGET/release/pdeck"
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p target/assets/completions dist
+          "$bin" --man > target/assets/pdeck.1
+          "$bin" --completions bash > target/assets/completions/pdeck.bash
+          "$bin" --completions zsh > target/assets/completions/_pdeck
+          "$bin" --completions fish > target/assets/completions/pdeck.fish
+          cp "$bin" "dist/pdeck-$version-${{ matrix.arch }}-linux"
+      - uses: ./.github/actions/setup-nfpm
+      - run: scripts/package.sh "target/$TARGET/release/pdeck" target/assets "${{ matrix.deb }}" dist "$VERSION"
+      - run: scripts/test-packages.sh dist "$VERSION" "${{ matrix.arch }}"
+
   # The Nix flake (Linux only) builds from source with the pinned Cargo.lock and
   # nixpkgs from flake.lock.
   nix:
