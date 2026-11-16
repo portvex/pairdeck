@@ -2,8 +2,39 @@
 name = "pairdeck"
 version = "0.1.0"
 edition = "2024"
+# russh needs 1.89.
+rust-version = "1.89"
 description = "A modern twin-panel terminal file manager in the spirit of Midnight Commander"
 license = "MIT"
+repository = "https://github.com/portvex/pairdeck"
+readme = "README.md"
+keywords = ["file-manager", "tui", "terminal", "midnight-commander", "sftp"]
+categories = ["command-line-utilities", "filesystem"]
+# Only what `cargo install` needs: the sources, tests and docs text (no screenshots,
+# fuzzing, CI or packaging files).
+include = ["/src/**", "/tests/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
+
+# `cargo deb --no-build --target <musl target> --profile static` after the release
+# workflow has generated the man page and completions into target/assets.
+[package.metadata.deb]
+name = "pairdeck"
+maintainer = "portvex <347037878+portvex@users.noreply.github.com>"
+section = "utils"
+priority = "optional"
+# Static musl executable: no shared library dependencies.
+depends = ""
+extended-description = """\
+pairdeck (command: pdeck) is a twin-panel terminal file manager inspired by Midnight \
+Commander: F-key workflow, image and code previews, archives, SFTP, S3 and WebDAV, \
+git status, a fuzzy finder and themes."""
+assets = [
+    ["target/release/pdeck", "usr/bin/", "755"],
+    ["target/assets/pdeck.1", "usr/share/man/man1/", "644"],
+    ["target/assets/completions/pdeck.bash", "usr/share/bash-completion/completions/pdeck", "644"],
+    ["target/assets/completions/_pdeck", "usr/share/zsh/vendor-completions/", "644"],
+    ["target/assets/completions/pdeck.fish", "usr/share/fish/vendor_completions.d/", "644"],
+    ["README.md", "usr/share/doc/pairdeck/", "644"],
+]
 
 [lib]
 name = "pairdeck"
@@ -37,7 +68,8 @@ zip = "9"
 tar = "0.4"
 flate2 = "1"
 bzip2 = "0.6"
-xz2 = "0.1"
+# "static": build liblzma from source instead of linking a system/Homebrew copy.
+xz2 = { version = "0.1", features = ["static"] }
 # Pinned: 0.14.4 is only a day old (zip accepts ^0.14.2).
 zstd = "=0.14.3"
 # S3 (SigV4 request signing, no async runtime) and a blocking HTTP client for S3/WebDAV.
@@ -46,7 +78,13 @@ ureq = "=3.5.0"
 quick-xml = "0.41"
 url = "2"
 sevenz-rust2 = "0.25"
-ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+# SFTP: pure-Rust SSH (no OpenSSL). ring is the crypto provider rustls already uses.
+# Pinned: 0.65.2 is only a day old.
+russh = { version = "=0.65.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "3.0.1"
+# russh is async: a small private runtime drives it behind the blocking Vfs trait.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync"] }
+tokio-util = { version = "0.7", features = ["io-util"] }
 toml = "1"
 # Format-preserving edits of config.toml (key binding editor).
 toml_edit = "=0.25.17"
@@ -72,6 +110,15 @@ open = "5"
 lto = "thin"
 codegen-units = 4
 strip = true
+
+# Self-contained release binary: every C library (ring's crypto core, zlib, liblzma,
+# zstd) is compiled in. Linux: build for a *-linux-musl target to get a fully static
+# executable; macOS always links the system libSystem and frameworks.
+# Check the result with scripts/check-static.sh.
+[profile.static]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
 
 [lints.rust]
 unsafe_code = "deny"

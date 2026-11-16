@@ -23,6 +23,18 @@ Binary name: `pdeck`
 | ![Fuzzy finder](docs/screenshots/fuzzy.png) | ![Classic theme and copy dialog](docs/screenshots/classic.png) |
 | **Fuzzy finder** (Ctrl-P) over the whole tree, with a live preview | **`classic` theme**: the familiar blue Midnight Commander look, here with the F5 copy dialog |
 
+## Install
+
+| Where | Command |
+|---|---|
+| Homebrew (macOS, Linux) | `brew install portvex/tap/pairdeck` |
+| Debian / Ubuntu | download `pairdeck_<version>_amd64.deb` or `_arm64.deb` from the [latest release](https://github.com/portvex/pairdeck/releases/latest), then `sudo apt install ./pairdeck_*.deb` |
+| Cargo | `cargo install pairdeck` (Rust 1.89+ and a C compiler) |
+| Prebuilt binary | static Linux (x86_64, aarch64) and universal macOS tarballs on the [releases page](https://github.com/portvex/pairdeck/releases) |
+
+Every release file has a signed build provenance attestation:
+`gh attestation verify pairdeck-<version>-x86_64-unknown-linux-musl.tar.gz -R portvex/pairdeck`.
+
 ## Build
 
 ```sh
@@ -30,8 +42,22 @@ cargo build --release
 ./target/release/pdeck [LEFT_DIR] [RIGHT_DIR]
 ```
 
-Requirements: Rust 1.85+ (edition 2024). OpenSSL/libssh2 are vendored, so no
-system libraries are needed. A [Nerd Font](https://www.nerdfonts.com/) in your
+Requirements: Rust 1.89+ (edition 2024). No system libraries are needed: SFTP
+uses russh (pure Rust SSH) and HTTPS uses rustls, so there is no OpenSSL.
+
+For a self-contained binary to copy to other machines, use the `static`
+profile. Every C library (liblzma, zstd and the crypto core of ring) is compiled in;
+on Linux, a musl target makes the executable fully static:
+
+```sh
+cargo build --profile static --target x86_64-unknown-linux-musl   # Linux, no dependencies at all
+cargo build --profile static                                      # macOS: only system libraries
+scripts/check-static.sh target/x86_64-unknown-linux-musl/static/pdeck
+```
+
+From macOS, `cargo zigbuild --profile static --target x86_64-unknown-linux-musl`
+([cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)) cross-builds
+the Linux binary. Windows is not supported yet. A [Nerd Font](https://www.nerdfonts.com/) in your
 terminal is recommended for icons (`nerd_fonts = false` disables them).
 
 ### Man page and shell completions
@@ -402,10 +428,23 @@ installed into `.git/hooks` on the first `cargo test`. CI runs the same commands
 | pre-commit hook | `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings` |
 | pre-push hook | `cargo test --locked`, `cargo audit`, `cargo deny check` |
 | CI (`.github/workflows/ci.yml`, Linux + macOS) | all of the above; pull requests replay the fuzz regressions, the nightly run fuzzes every target for 60 s |
-| Release (`.github/workflows/release.yml`, tags `v*`) | static musl binaries for x86_64/aarch64 Linux, macOS arm64/x86_64 and a universal binary, tarballs with `sha256sums.txt` on a GitHub release |
+| Release (`.github/workflows/release.yml`) | the full CI, then static musl binaries for x86_64/aarch64 Linux, macOS arm64/x86_64 and a universal binary, `.deb` packages, build attestations, a GitHub release with `sha256sums.txt`, the Homebrew tap and crates.io |
 
-A Homebrew formula template lives in `packaging/homebrew/pairdeck.rb` (fill in the
-repository and the checksums from a release).
+### Releasing
+
+1. Bump `version` in `Cargo.toml` (and `Cargo.lock` with `cargo check`), merge it to `main`.
+2. Actions > Release > Run workflow, enter the same version (e.g. `0.2.0`), or run
+   `gh workflow run release.yml -f version=0.2.0`.
+
+The workflow refuses a version that does not match `Cargo.toml` or whose tag exists,
+runs the whole CI, builds and test-installs every package, and only then creates the tag
+`v0.2.0` and the GitHub release (pushing that tag yourself works too). A version with a
+suffix such as `0.2.0-rc.1` becomes a pre-release and skips the Homebrew tap.
+
+The Homebrew formula is rendered from `packaging/homebrew/pairdeck.rb.in` by
+`scripts/homebrew-formula.sh` and pushed to `portvex/homebrew-tap` with a deploy key
+(secret `HOMEBREW_TAP_DEPLOY_KEY`); crates.io needs the secret `CARGO_REGISTRY_TOKEN`.
+Without a secret that step is skipped with a warning.
 
 ### UI tests
 

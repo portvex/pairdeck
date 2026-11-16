@@ -8,6 +8,8 @@ on:
     # Nightly fuzzing smoke run.
     - cron: "17 3 * * *"
   workflow_dispatch:
+  # The release workflow runs the same checks before building.
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-15-intel]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-15-intel]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -91,7 +93,8 @@ jobs:
       - name: replay regressions
         run: ./fuzz/run.sh replay
       - name: fuzz every target for 60 s
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        # Not when called from the release workflow (there the event is its workflow_dispatch).
+        if: github.workflow == 'CI' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         run: |
           cd fuzz
           for t in $(cargo +nightly fuzz list); do

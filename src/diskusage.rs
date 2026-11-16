@@ -448,7 +448,10 @@ mod tests {
         let t = scan(&base, &p);
         assert_eq!(t.apparent, 300_010, "hard link counted once");
         assert_eq!(t.children[0].name, "big", "largest first");
-        assert_eq!(t.children[0].apparent, 300_000);
+        // The hard-linked file counts in whichever directory the walk reaches first,
+        // and directory order differs between file systems (APFS vs ext4).
+        assert!(matches!(t.children[0].apparent, 200_000 | 300_000), "big: {}", t.children[0].apparent);
+        assert_eq!(t.children[0].apparent + t.children[1].apparent, 300_010);
         let inner = t.at(&[0, 0]).unwrap();
         assert_eq!(inner.name, "inner");
         assert!(t.disk >= t.apparent, "disk usage includes block overhead");
@@ -458,7 +461,8 @@ mod tests {
         let removed = t2.remove(&[0], 0).unwrap(); // remove big/inner
         assert_eq!(removed.name, "inner");
         assert_eq!(t2.apparent, 100_010);
-        assert_eq!(t2.children[0].apparent, 100_000);
+        let big_after = t2.children.iter().find(|c| c.name == "big").unwrap().apparent;
+        assert_eq!(big_after, t.children[0].apparent - 200_000);
         assert_eq!(t2.items, t.items - removed.items);
         assert!(t2.remove(&[9], 0).is_none(), "bad path");
         let _ = std::fs::remove_dir_all(&base);
