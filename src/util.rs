@@ -86,16 +86,28 @@ pub fn now() -> Timestamp {
     Timestamp::try_from(SystemTime::now()).unwrap_or(Timestamp::UNIX_EPOCH)
 }
 
-/// The local time zone: `TZ` or `/etc/localtime`, then (as chrono did) `/etc/timezone`,
-/// and UTC when none of them can be used.
+/// The local time zone: `TZ` or `/etc/localtime`; failing that (as chrono did) the zone
+/// `/etc/localtime` links to, then `/etc/timezone`, and UTC when none can be used.
 pub fn local_tz() -> TimeZone {
+    // jiff caches only a zone it found, so after one failure the fallback is kept:
+    // every file row asks for the zone.
+    static FALLBACK: OnceLock<TimeZone> = OnceLock::new();
+    if let Some(tz) = FALLBACK.get() {
+        return tz.clone();
+    }
     TimeZone::try_system().unwrap_or_else(|_| {
-        // Read once: this only runs where /etc/localtime is missing or unusable.
-        static FROM_FILE: OnceLock<Option<TimeZone>> = OnceLock::new();
-        FROM_FILE
-            .get_or_init(|| TimeZone::get(std::fs::read_to_string("/etc/timezone").ok()?.trim()).ok())
+        FALLBACK
+            .get_or_init(|| {
+                let linked = std::fs::read_link("/etc/localtime").ok().and_then(|p| {
+                    let p = p.to_string_lossy().into_owned();
+                    let name = p.split_once("zoneinfo/")?.1.to_string();
+                    TimeZone::get(&name).ok()
+                });
+                linked
+                    .or_else(|| TimeZone::get(std::fs::read_to_string("/etc/timezone").ok()?.trim()).ok())
+                    .unwrap_or(TimeZone::UTC)
+            })
             .clone()
-            .unwrap_or(TimeZone::UTC)
     })
 }
 
