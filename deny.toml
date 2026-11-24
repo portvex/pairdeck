@@ -6,7 +6,6 @@ all-features = false
 version = 2
 yanked = "deny"
 ignore = [
-    { id = "RUSTSEC-2025-0141", reason = "bincode is only used by syntect to load its bundled, trusted dumps" },
     { id = "RUSTSEC-2023-0071", reason = "rsa (via russh): no fixed release; only used to sign the SFTP login challenge with a local id_rsa file, once per connection. Host key checks are public-key operations; agent keys are signed by the agent" },
 ]
 

@@ -109,12 +109,12 @@ impl Drop for UploadOnClose {
 
 /// HTTP dates (RFC 1123, e.g. `Tue, 15 Nov 1994 08:12:31 GMT`).
 pub fn parse_http_date(s: &str) -> Option<std::time::SystemTime> {
-    chrono::DateTime::parse_from_rfc2822(s.trim()).ok().map(Into::into)
+    jiff::fmt::rfc2822::parse(s.trim()).ok().and_then(|z| z.timestamp().try_into().ok())
 }
 
 /// ISO 8601 dates as used by S3 (`2009-10-12T17:50:30.000Z`).
 pub fn parse_iso_date(s: &str) -> Option<std::time::SystemTime> {
-    chrono::DateTime::parse_from_rfc3339(s.trim()).ok().map(Into::into)
+    s.trim().parse::<jiff::Timestamp>().ok().and_then(|t| t.try_into().ok())
 }
 
 #[cfg(test)]
@@ -123,8 +123,14 @@ mod tests {
 
     #[test]
     fn dates_and_messages() {
-        assert!(parse_http_date("Tue, 15 Nov 1994 08:12:31 GMT").is_some());
-        assert!(parse_iso_date("2009-10-12T17:50:30.000Z").is_some());
+        let secs = |t: Option<std::time::SystemTime>| {
+            t.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs())
+        };
+        assert_eq!(secs(parse_http_date("Tue, 15 Nov 1994 08:12:31 GMT")), Some(784_887_151));
+        assert_eq!(secs(parse_iso_date("2009-10-12T17:50:30.000Z")), Some(1_255_369_830));
+        assert_eq!(secs(parse_iso_date(" 2009-10-12T19:50:30+02:00 ")), Some(1_255_369_830));
+        assert_eq!(parse_http_date("not a date"), None);
+        assert_eq!(parse_iso_date("2009-13-12T17:50:30Z"), None);
         assert_eq!(server_message("<Error><Message>Access Denied</Message></Error>"), " (Access Denied)");
         assert_eq!(server_message("plain"), " (plain)");
         assert_eq!(server_message("<x/>"), "");

@@ -1,6 +1,6 @@
 [package]
 name = "pairdeck"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # russh needs 1.89.
 rust-version = "1.89"
@@ -51,7 +51,7 @@ xz2 = { version = "0.1", features = ["static"] }
 # Pinned: 0.14.4 is only a day old (zip accepts ^0.14.2).
 zstd = "=0.14.3"
 # S3 (SigV4 request signing, no async runtime) and a blocking HTTP client for S3/WebDAV.
-rusty-s3 = "0.11"
+rusty-s3 = "0.12"
 ureq = "=3.5.0"
 quick-xml = "0.41"
 url = "2"
@@ -59,7 +59,7 @@ sevenz-rust2 = "0.25"
 # SFTP: pure-Rust SSH (no OpenSSL). ring is the crypto provider rustls already uses.
 # Pinned: 0.65.2 is only a day old.
 russh = { version = "=0.65.1", default-features = false, features = ["ring", "rsa", "flate2"] }
-russh-sftp = "3.0.1"
+russh-sftp = "4"
 # russh is async: a small private runtime drives it behind the blocking Vfs trait.
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync"] }
 tokio-util = { version = "0.7", features = ["io-util"] }
@@ -68,14 +68,14 @@ toml = "1"
 toml_edit = "=0.25.17"
 serde = { version = "1", features = ["derive"] }
 dirs = "7"
-chrono = "0.4"
+jiff = "1"
 uzers = "0.12"
 nix = { version = "0.31", features = ["fs", "user", "hostname"] }
 regex = "1"
 globset = "0.4"
 walkdir = "2"
 notify = "8"
-trash = "5"
+trash = "5.4"
 crossbeam-channel = "0.5"
 unicode-width = "0.2"
 unicode-segmentation = "1"

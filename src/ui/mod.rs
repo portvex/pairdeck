@@ -185,7 +185,7 @@ fn draw_menubar(f: &mut Frame, app: &mut App, ctx: &Ctx, r: Rect) {
         let pct = app.jobs.iter().map(|j| j.fraction()).sum::<f64>() / running as f64 * 100.0;
         right.push_str(&format!(" {running} job(s) {pct:.0}% "));
     }
-    right.push_str(&chrono::Local::now().format(" %H:%M ").to_string());
+    right.push_str(&crate::util::now().to_zoned_datetime(crate::util::local_tz()).strftime(" %H:%M ").to_string());
     let used: usize = spans.iter().map(|s| str_width(&s.content)).sum();
     let gap = (r.width as usize).saturating_sub(used + str_width(&right));
     spans.push(Span::styled(" ".repeat(gap), ctx.theme.menubar));

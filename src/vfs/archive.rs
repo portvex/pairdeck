@@ -250,8 +250,7 @@ impl Drop for PendingWriter {
 }
 
 fn zip_dt(t: SystemTime) -> Option<zip::DateTime> {
-    use chrono::{Datelike, Timelike};
-    let dt: chrono::DateTime<chrono::Local> = t.into();
+    let dt = crate::util::local(t)?;
     zip::DateTime::from_date_and_time(
         dt.year().clamp(1980, 2107) as u16,
         dt.month() as u8,
@@ -1055,13 +1054,22 @@ impl Drop for ArchiveFs {
 }
 
 fn zip_time(d: zip::DateTime) -> Option<SystemTime> {
-    use chrono::{Local, NaiveDate, TimeZone};
-    let nd = NaiveDate::from_ymd_opt(d.year() as i32, d.month() as u32, d.day() as u32)?.and_hms_opt(
-        d.hour() as u32,
-        d.minute() as u32,
-        d.second().min(59) as u32,
-    )?;
-    Local.from_local_datetime(&nd).earliest().map(SystemTime::from)
+    let dt = jiff::civil::DateTime::new(
+        i16::try_from(d.year()).ok()?,
+        d.month() as i8,
+        d.day() as i8,
+        d.hour() as i8,
+        d.minute() as i8,
+        d.second().min(59) as i8,
+        0,
+    )
+    .ok()?;
+    // A time repeated by a DST change maps to its earlier instance. A time skipped by
+    // one (a gap) is read with the offset from before the change, e.g. 02:30 on a
+    // spring-forward night in New York becomes 01:30 standard time, where chrono
+    // gave no time at all.
+    let zoned = crate::util::local_tz().to_ambiguous_zoned_datetime(dt).earlier().ok()?;
+    SystemTime::try_from(zoned.timestamp()).ok()
 }
 
 impl Vfs for ArchiveFs {
@@ -1545,19 +1553,8 @@ fn build_archive(src_dir: &Path, names: &[String], out: &Path, fmt: OutFmt) -> R
                     .compression_method(zip::CompressionMethod::Deflated)
                     .unix_permissions(mode)
                     .large_file(m.len() >= 0xFFFF_FFFF);
-                if let Ok(t) = m.modified() {
-                    let dt: chrono::DateTime<chrono::Local> = t.into();
-                    use chrono::{Datelike, Timelike};
-                    if let Ok(z) = zip::DateTime::from_date_and_time(
-                        dt.year().clamp(1980, 2107) as u16,
-                        dt.month() as u8,
-                        dt.day() as u8,
-                        dt.hour() as u8,
-                        dt.minute() as u8,
-                        dt.second() as u8,
-                    ) {
-                        opts = opts.last_modified_time(z);
-                    }
+                if let Some(z) = m.modified().ok().and_then(zip_dt) {
+                    opts = opts.last_modified_time(z);
                 }
                 let ft = m.file_type();
                 if ft.is_symlink() {
@@ -1618,6 +1615,20 @@ mod password_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zip_times_round_trip_in_local_time() {
+        let z = zip::DateTime::from_date_and_time(2021, 3, 14, 12, 30, 44).ok();
+        let t = z.and_then(zip_time);
+        assert!(t.is_some());
+        let back = t.and_then(zip_dt);
+        assert_eq!(
+            back.map(|b| (b.year(), b.month(), b.day(), b.hour(), b.minute(), b.second())),
+            Some((2021, 3, 14, 12, 30, 44))
+        );
+        // The last representable second (zip seconds have 2 s resolution).
+        assert!(zip::DateTime::from_date_and_time(2021, 3, 14, 12, 30, 58).ok().and_then(zip_time).is_some());
+    }
+
     use super::*;
 
     fn sample_tree(dir: &Path) -> PathBuf {
