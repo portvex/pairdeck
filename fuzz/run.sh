@@ -8,12 +8,17 @@ cd "$(dirname "$0")"
 # rustup's proxies must win over a Homebrew/system rustc for `+nightly` to work.
 export PATH="$HOME/.cargo/bin:$PATH"
 TARGETS=$(cargo +nightly fuzz list)
+# cargo-fuzz builds for the triple it was itself built for unless told
+# otherwise; a static (musl) cargo-fuzz, as CI installs, would pick musl,
+# where sanitizers cannot run. Always build for nightly rustc's host.
+HOST=$(rustc +nightly -vV | sed -n 's/^host: //p')
+[ -n "$HOST" ] || { echo "fuzz: cannot determine the nightly host triple" >&2; exit 1; }
 
 replay() {
     for t in $TARGETS; do
         [ -d "regressions/$t" ] || continue
         echo "== replay $t"
-        cargo +nightly fuzz run "$t" "regressions/$t" -- -runs=0
+        cargo +nightly fuzz run --target "$HOST" "$t" "regressions/$t" -- -runs=0
     done
 }
 
@@ -23,7 +28,7 @@ fuzz() {
     mkdir -p "corpus/$t"
     [ -d "seeds/$t" ] && cp -n seeds/"$t"/* "corpus/$t/" 2>/dev/null || true
     echo "== fuzz $t for ${secs}s"
-    cargo +nightly fuzz run "$t" "corpus/$t" -- -max_total_time="$secs" -rss_limit_mb=2048 -timeout=10
+    cargo +nightly fuzz run --target "$HOST" "$t" "corpus/$t" -- -max_total_time="$secs" -rss_limit_mb=2048 -timeout=10
 }
 
 case "$1" in
