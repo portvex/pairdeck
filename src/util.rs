@@ -1,6 +1,6 @@
 //! Small helpers shared across modules.
 
-use chrono::{DateTime, Local};
+use jiff::{Timestamp, ZonedDateTime, tz::TimeZone};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -57,22 +57,46 @@ pub fn grouped(n: u64) -> String {
 
 /// MC-style date: "Mar 14 12:30" for recent files, "Mar 14  2021" for older ones.
 pub fn short_time(t: Option<SystemTime>) -> String {
-    let Some(t) = t else { return "            ".into() };
-    let dt: DateTime<Local> = t.into();
-    let now = Local::now();
-    let age = now.signed_duration_since(dt);
-    if age.num_days() < 180 && age.num_days() > -1 {
-        dt.format("%b %e %H:%M").to_string()
+    let Some(dt) = t.and_then(local) else { return "            ".into() };
+    // Whole days, truncated toward zero.
+    let age_days = (now().as_second() - dt.timestamp().as_second()) / 86_400;
+    if age_days < 180 && age_days > -1 {
+        dt.strftime("%b %e %H:%M").to_string()
     } else {
-        dt.format("%b %e  %Y").to_string()
+        dt.strftime("%b %e  %Y").to_string()
     }
 }
 
 pub fn full_time(t: Option<SystemTime>) -> String {
-    match t {
-        Some(t) => DateTime::<Local>::from(t).format("%Y-%m-%d %H:%M:%S").to_string(),
+    match t.and_then(local) {
+        Some(dt) => dt.strftime("%Y-%m-%d %H:%M:%S").to_string(),
         None => "-".into(),
     }
+}
+
+/// A system time in the local time zone; `None` outside jiff's supported range
+/// (years -9999..=9999).
+pub fn local(t: SystemTime) -> Option<ZonedDateTime> {
+    Timestamp::try_from(t).ok().map(|ts| ts.to_zoned_datetime(local_tz()))
+}
+
+/// The current time; the Unix epoch if the system clock is outside jiff's range
+/// (`Timestamp::now()` would panic there).
+pub fn now() -> Timestamp {
+    Timestamp::try_from(SystemTime::now()).unwrap_or(Timestamp::UNIX_EPOCH)
+}
+
+/// The local time zone: `TZ` or `/etc/localtime`, then (as chrono did) `/etc/timezone`,
+/// and UTC when none of them can be used.
+pub fn local_tz() -> TimeZone {
+    TimeZone::try_system().unwrap_or_else(|_| {
+        // Read once: this only runs where /etc/localtime is missing or unusable.
+        static FROM_FILE: OnceLock<Option<TimeZone>> = OnceLock::new();
+        FROM_FILE
+            .get_or_init(|| TimeZone::get(std::fs::read_to_string("/etc/timezone").ok()?.trim()).ok())
+            .clone()
+            .unwrap_or(TimeZone::UTC)
+    })
 }
 
 pub fn user_name(uid: u32) -> String {
@@ -235,5 +259,30 @@ pub fn looks_binary(data: &[u8]) -> bool {
     match std::str::from_utf8(sample) {
         Ok(_) => false,
         Err(e) => e.valid_up_to() < sample.len().saturating_sub(4),
+    }
+}
+
+#[cfg(test)]
+mod time_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn file_times_format_like_mc() {
+        assert_eq!(short_time(None), "            ");
+        assert_eq!(full_time(None), "-");
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_615_721_445); // March 2021
+        let s = short_time(Some(old));
+        assert_eq!(s.chars().count(), 12, "{s:?}");
+        assert!(
+            s.starts_with("Mar 14  2021") || s.starts_with("Mar 13  2021") || s.starts_with("Mar 15  2021"),
+            "{s:?}"
+        );
+        let recent = short_time(Some(SystemTime::now()));
+        assert_eq!(recent.chars().count(), 12, "{recent:?}");
+        assert!(recent.contains(':'), "{recent:?}");
+        let full = full_time(Some(old));
+        assert!(full.starts_with("2021-03-1"), "{full:?}");
+        assert_eq!(full.len(), 19, "{full:?}");
     }
 }

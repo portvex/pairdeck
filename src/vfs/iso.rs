@@ -71,9 +71,7 @@ fn date7(b: &[u8]) -> Option<SystemTime> {
     if b.len() < 7 || b[1] == 0 || b[2] == 0 {
         return None;
     }
-    let d = chrono::NaiveDate::from_ymd_opt(1900 + b[0] as i32, b[1] as u32, b[2] as u32)?;
-    let t = d.and_hms_opt(b[3] as u32, b[4] as u32, b[5] as u32)?;
-    let secs = t.and_utc().timestamp() - (b[6] as i8) as i64 * 15 * 60;
+    let secs = utc_secs(1900 + i16::from(b[0]), b[1], b[2], b[3], b[4], b[5])? - (b[6] as i8) as i64 * 15 * 60;
     to_system_time(secs)
 }
 
@@ -84,10 +82,18 @@ fn date17(b: &[u8]) -> Option<SystemTime> {
     }
     let s = std::str::from_utf8(&b[..14]).ok()?;
     let n = |r: std::ops::Range<usize>| s.get(r).and_then(|x| x.parse::<u32>().ok());
-    let d = chrono::NaiveDate::from_ymd_opt(n(0..4)? as i32, n(4..6)?, n(6..8)?)?;
-    let t = d.and_hms_opt(n(8..10)?, n(10..12)?, n(12..14)?)?;
-    let secs = t.and_utc().timestamp() - (b[16] as i8) as i64 * 15 * 60;
+    let n8 = |r: std::ops::Range<usize>| n(r).and_then(|x| u8::try_from(x).ok());
+    let year = i16::try_from(n(0..4)?).ok()?;
+    let secs =
+        utc_secs(year, n8(4..6)?, n8(6..8)?, n8(8..10)?, n8(10..12)?, n8(12..14)?)? - (b[16] as i8) as i64 * 15 * 60;
     to_system_time(secs)
+}
+
+/// Seconds since the epoch for a UTC civil time; `None` if any field is out of range.
+fn utc_secs(year: i16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> Option<i64> {
+    let f = |v: u8| i8::try_from(v).ok();
+    let dt = jiff::civil::DateTime::new(year, f(month)?, f(day)?, f(hour)?, f(minute)?, f(second)?, 0).ok()?;
+    Some(dt.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok()?.timestamp().as_second())
 }
 
 fn to_system_time(secs: i64) -> Option<SystemTime> {
@@ -583,6 +589,20 @@ impl Vfs for IsoFs {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn volume_and_record_dates() {
+        let secs =
+            |t: Option<SystemTime>| t.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+        // 2021-03-14 12:30:45 at GMT+1 (offset 4 x 15 min) is 11:30:45 UTC.
+        assert_eq!(secs(date7(&[121, 3, 14, 12, 30, 45, 4])), Some(1_615_721_445));
+        assert_eq!(secs(date17(b"2021031412304500\x04")), Some(1_615_721_445));
+        // Invalid month, day 0 and short input are rejected.
+        assert_eq!(date7(&[121, 13, 14, 12, 30, 45, 0]), None);
+        assert_eq!(date7(&[121, 3, 0, 12, 30, 45, 0]), None);
+        assert_eq!(date17(b"20210230123045000"), None);
+        assert_eq!(date17(b"2021"), None);
+    }
+
     use super::*;
     use std::io::Cursor;
 
