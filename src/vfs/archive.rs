@@ -101,9 +101,19 @@ pub fn browsable(loc: &Location, name: &str) -> bool {
 /// Deletes a temp file when dropped.
 struct TempFile(PathBuf);
 
+impl TempFile {
+    /// Keep the file (it was renamed into place) without leaking the path, as
+    /// `mem::forget` would.
+    fn disarm(mut self) {
+        self.0 = PathBuf::new();
+    }
+}
+
 impl Drop for TempFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }
 
@@ -862,7 +872,7 @@ impl ArchiveFs {
             let _ = std::fs::set_permissions(&tmp, m.permissions());
         }
         std::fs::rename(&tmp, &self.file).with_context(|| format!("cannot replace {}", self.file.display()))?;
-        std::mem::forget(guard);
+        guard.disarm();
         // Start over from the new file.
         self.entries.clear();
         self.children.clear();
@@ -1615,6 +1625,21 @@ mod password_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn temp_file_guard_removes_unless_disarmed() {
+        let dir = std::env::temp_dir().join(format!("pairdeck-tempfile-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let (gone, kept) = (dir.join("gone"), dir.join("kept"));
+        for p in [&gone, &kept] {
+            assert!(std::fs::write(p, b"x").is_ok());
+        }
+        drop(TempFile(gone.clone()));
+        TempFile(kept.clone()).disarm();
+        assert!(!gone.exists());
+        assert!(kept.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn zip_times_round_trip_in_local_time() {
         let z = zip::DateTime::from_date_and_time(2021, 3, 14, 12, 30, 44).ok();
